@@ -23,11 +23,10 @@ export const MessageAttachment = ({ fileUrl, fileType, fileName }: Props) => {
     return <div className="h-24 w-48 rounded-lg bg-muted/50 animate-pulse" />;
   }
 
-  if (fileType?.startsWith("image/")) {
+  const safeImageTypes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+  if (fileType && safeImageTypes.includes(fileType)) {
     return (
-      <a href={signed} target="_blank" rel="noreferrer">
-        <img src={signed} alt={fileName || "attachment"} className="max-w-xs max-h-64 rounded-lg object-cover" loading="lazy" />
-      </a>
+      <img src={signed} alt={fileName || "attachment"} className="max-w-xs max-h-64 rounded-lg object-cover" loading="lazy" />
     );
   }
 
