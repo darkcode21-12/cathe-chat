@@ -4,7 +4,6 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "@/hooks/use-toast";
 import { MessageAttachment } from "@/components/chat/MessageAttachment";
 import { LogOut, Paperclip, Send, Shield, Trash2, MessageCircle } from "lucide-react";
@@ -155,7 +154,7 @@ const Chat = () => {
         </div>
       </header>
 
-      <ScrollArea className="flex-1 px-3" viewportRef={scrollRef as any}>
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3">
         <div className="space-y-3 py-4">
           {messages.length === 0 && (
             <div className="text-center text-muted-foreground py-12">
@@ -193,7 +192,7 @@ const Chat = () => {
             );
           })}
         </div>
-      </ScrollArea>
+      </div>
 
       <div className="glass m-3 p-2 rounded-2xl shadow-soft flex items-center gap-2">
         <input ref={fileRef} type="file" hidden onChange={onFile} accept="image/*,audio/*,video/*,application/pdf,.doc,.docx,.txt,.zip" />
