@@ -43,8 +43,17 @@ const Auth = () => {
           options: { emailRedirectTo: `${window.location.origin}/chat` },
         });
         if (error) throw error;
-        toast({ title: "Account created", description: "You got a random anonymous handle. Welcome!" });
-        navigate("/chat", { replace: true });
+        // Try to sign in immediately (works when auto-confirm is enabled)
+        const { error: signInErr } = await supabase.auth.signInWithPassword({
+          email: parsed.data.email,
+          password: parsed.data.password,
+        });
+        if (signInErr) {
+          toast({ title: "Account created", description: "Please sign in with your new credentials." });
+        } else {
+          toast({ title: "Welcome!", description: "You got a random anonymous handle." });
+          navigate("/chat", { replace: true });
+        }
       } else {
         const { error } = await supabase.auth.signInWithPassword({
           email: parsed.data.email,
@@ -54,7 +63,17 @@ const Auth = () => {
         navigate("/chat", { replace: true });
       }
     } catch (err: any) {
-      toast({ title: "Authentication error", description: err.message, variant: "destructive" });
+      let description = err.message || "Something went wrong";
+      if (err.message?.includes("Invalid login credentials")) {
+        description = "Wrong email or password. If you just signed up, try the Sign up tab instead.";
+      } else if (err.message?.includes("Email not confirmed")) {
+        description = "Please check your email and confirm your account before signing in.";
+      } else if (err.message?.includes("User already registered")) {
+        description = "This email already has an account. Try signing in instead.";
+      } else if (err.message?.includes("weak")) {
+        description = "That password is too common. Please pick a stronger one.";
+      }
+      toast({ title: "Authentication error", description, variant: "destructive" });
     } finally {
       setLoading(false);
     }
