@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "@/hooks/use-toast";
 import { MessageAttachment } from "@/components/chat/MessageAttachment";
 import { LogOut, Paperclip, Send, Shield, Trash2, MessageCircle } from "lucide-react";
+import type { RealtimeChannel } from "@supabase/supabase-js";
 
 interface Message {
   id: string;
@@ -31,6 +32,7 @@ const Chat = () => {
   const [myHandle, setMyHandle] = useState<string>("");
   const fileRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const channelRef = useRef<RealtimeChannel | null>(null);
 
   useEffect(() => {
     document.title = "Group Chat — School Anonymous Chat";
@@ -62,9 +64,18 @@ const Chat = () => {
     if (!user) return;
     const channel = supabase
       .channel("messages-room")
+      .on("broadcast", { event: "new-message" }, async (payload) => {
+        const m = payload.payload as Message;
+        // Skip own broadcasts (already added optimistically) and dedupe
+        setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
+        if (!handles[m.user_id]) {
+          const { data } = await supabase.from("profiles").select("handle").eq("id", m.user_id).maybeSingle();
+          if (data) setHandles((h) => ({ ...h, [m.user_id]: data.handle }));
+        }
+      })
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, async (payload) => {
         const m = payload.new as Message;
-        setMessages((prev) => [...prev, m]);
+        setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
         if (!handles[m.user_id]) {
           const { data } = await supabase.from("profiles").select("handle").eq("id", m.user_id).maybeSingle();
           if (data) setHandles((h) => ({ ...h, [m.user_id]: data.handle }));
@@ -74,7 +85,8 @@ const Chat = () => {
         setMessages((prev) => prev.filter((m) => m.id !== (payload.old as any).id));
       })
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    channelRef.current = channel;
+    return () => { supabase.removeChannel(channel); channelRef.current = null; };
   }, [user, handles]);
 
   // Auto-scroll
@@ -87,8 +99,26 @@ const Chat = () => {
     setSending(true);
     const content = text.trim().slice(0, 2000);
     setText("");
-    const { error } = await supabase.from("messages").insert({ user_id: user.id, content });
-    if (error) toast({ title: "Failed to send", description: error.message, variant: "destructive" });
+    // Optimistic local message + broadcast over WebSocket for instant delivery
+    const optimistic: Message = {
+      id: crypto.randomUUID(),
+      user_id: user.id,
+      content,
+      file_url: null,
+      file_type: null,
+      file_name: null,
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, optimistic]);
+    if (channelRef.current) {
+      await channelRef.current.send({ type: "broadcast", event: "new-message", payload: optimistic });
+    }
+    // Persist so messages survive reloads and admins can moderate
+    const { error } = await supabase.from("messages").insert({ id: optimistic.id, user_id: user.id, content });
+    if (error) {
+      setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
+      toast({ title: "Failed to send", description: error.message, variant: "destructive" });
+    }
     setSending(false);
   };
 
@@ -108,13 +138,30 @@ const Chat = () => {
       setSending(false);
       return;
     }
+    const optimistic: Message = {
+      id: crypto.randomUUID(),
+      user_id: user.id,
+      content: null,
+      file_url: path,
+      file_type: file.type,
+      file_name: file.name,
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, optimistic]);
+    if (channelRef.current) {
+      await channelRef.current.send({ type: "broadcast", event: "new-message", payload: optimistic });
+    }
     const { error } = await supabase.from("messages").insert({
+      id: optimistic.id,
       user_id: user.id,
       file_url: path,
       file_type: file.type,
       file_name: file.name,
     });
-    if (error) toast({ title: "Failed to send", description: error.message, variant: "destructive" });
+    if (error) {
+      setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
+      toast({ title: "Failed to send", description: error.message, variant: "destructive" });
+    }
     setSending(false);
   };
 
