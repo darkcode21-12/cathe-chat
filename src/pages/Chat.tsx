@@ -7,7 +7,6 @@ import { Input } from "@/components/ui/input";
 import { toast } from "@/hooks/use-toast";
 import { MessageAttachment } from "@/components/chat/MessageAttachment";
 import { LogOut, Paperclip, Send, Shield, Trash2, MessageCircle } from "lucide-react";
-import type { RealtimeChannel } from "@supabase/supabase-js";
 
 interface Message {
   id: string;
@@ -20,6 +19,17 @@ interface Message {
 }
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
+const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const ALLOWED_FILE_TYPES = [
+  ...ALLOWED_IMAGE_TYPES,
+  "audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg", "audio/webm",
+  "video/mp4", "video/webm", "video/quicktime",
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "text/plain",
+  "application/zip",
+];
 
 const Chat = () => {
   const { user, loading: authLoading } = useAuth();
@@ -32,7 +42,6 @@ const Chat = () => {
   const [myHandle, setMyHandle] = useState<string>("");
   const fileRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const channelRef = useRef<RealtimeChannel | null>(null);
 
   useEffect(() => {
     document.title = "Group Chat — School Anonymous Chat";
@@ -64,15 +73,6 @@ const Chat = () => {
     if (!user) return;
     const channel = supabase
       .channel("messages-room")
-      .on("broadcast", { event: "new-message" }, async (payload) => {
-        const m = payload.payload as Message;
-        // Skip own broadcasts (already added optimistically) and dedupe
-        setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
-        if (!handles[m.user_id]) {
-          const { data } = await supabase.from("profiles").select("handle").eq("id", m.user_id).maybeSingle();
-          if (data) setHandles((h) => ({ ...h, [m.user_id]: data.handle }));
-        }
-      })
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, async (payload) => {
         const m = payload.new as Message;
         setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
@@ -85,8 +85,7 @@ const Chat = () => {
         setMessages((prev) => prev.filter((m) => m.id !== (payload.old as any).id));
       })
       .subscribe();
-    channelRef.current = channel;
-    return () => { supabase.removeChannel(channel); channelRef.current = null; };
+    return () => { supabase.removeChannel(channel); };
   }, [user, handles]);
 
   // Auto-scroll
@@ -99,7 +98,7 @@ const Chat = () => {
     setSending(true);
     const content = text.trim().slice(0, 2000);
     setText("");
-    // Optimistic local message + broadcast over WebSocket for instant delivery
+    // Optimistic local message; remote users receive via postgres_changes (server-authoritative)
     const optimistic: Message = {
       id: crypto.randomUUID(),
       user_id: user.id,
@@ -110,9 +109,6 @@ const Chat = () => {
       created_at: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, optimistic]);
-    if (channelRef.current) {
-      await channelRef.current.send({ type: "broadcast", event: "new-message", payload: optimistic });
-    }
     // Persist so messages survive reloads and admins can moderate
     const { error } = await supabase.from("messages").insert({ id: optimistic.id, user_id: user.id, content });
     if (error) {
@@ -128,6 +124,10 @@ const Chat = () => {
     if (!file || !user) return;
     if (file.size > MAX_FILE_SIZE) {
       toast({ title: "File too large", description: "Max 25MB", variant: "destructive" });
+      return;
+    }
+    if (!ALLOWED_FILE_TYPES.includes(file.type)) {
+      toast({ title: "Unsupported file type", description: "SVG and other unsupported types are not allowed.", variant: "destructive" });
       return;
     }
     setSending(true);
@@ -148,9 +148,6 @@ const Chat = () => {
       created_at: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, optimistic]);
-    if (channelRef.current) {
-      await channelRef.current.send({ type: "broadcast", event: "new-message", payload: optimistic });
-    }
     const { error } = await supabase.from("messages").insert({
       id: optimistic.id,
       user_id: user.id,
@@ -242,7 +239,7 @@ const Chat = () => {
       </div>
 
       <div className="glass m-3 p-2 rounded-2xl shadow-soft flex items-center gap-2">
-        <input ref={fileRef} type="file" hidden onChange={onFile} accept="image/*,audio/*,video/*,application/pdf,.doc,.docx,.txt,.zip" />
+        <input ref={fileRef} type="file" hidden onChange={onFile} accept="image/png,image/jpeg,image/gif,image/webp,audio/*,video/*,application/pdf,.doc,.docx,.txt,.zip" />
         <Button variant="ghost" size="icon" onClick={() => fileRef.current?.click()} disabled={sending} aria-label="Attach file">
           <Paperclip className="size-5" />
         </Button>
