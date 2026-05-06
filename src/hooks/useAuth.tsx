@@ -1,24 +1,39 @@
-import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
-import type { Session, User } from "@supabase/supabase-js";
+import { useEffect, useState, useCallback } from "react";
+import { api, getToken, clearToken, setToken, User } from "@/lib/api";
 
 export function useAuth() {
-  const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
-      setSession(s);
-      setUser(s?.user ?? null);
-    });
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setUser(data.session?.user ?? null);
+  const refresh = useCallback(async () => {
+    if (!getToken()) { setUser(null); setLoading(false); return; }
+    try {
+      const { user } = await api.me();
+      setUser(user);
+    } catch {
+      clearToken();
+      setUser(null);
+    } finally {
       setLoading(false);
-    });
-    return () => sub.subscription.unsubscribe();
+    }
   }, []);
 
-  return { session, user, loading };
+  useEffect(() => {
+    // Pick up ?token=... from Google OAuth redirect
+    const url = new URL(window.location.href);
+    const tokenFromUrl = url.searchParams.get("token");
+    if (tokenFromUrl) {
+      setToken(tokenFromUrl);
+      url.searchParams.delete("token");
+      window.history.replaceState({}, "", url.toString());
+    }
+    refresh();
+  }, [refresh]);
+
+  const signOut = useCallback(() => {
+    clearToken();
+    setUser(null);
+  }, []);
+
+  return { user, loading, refresh, signOut };
 }

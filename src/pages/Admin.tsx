@@ -1,61 +1,46 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { api, User } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "@/hooks/use-toast";
 import { ArrowLeft, Shield, ShieldOff, Loader2 } from "lucide-react";
 
-interface Row { user_id: string; handle: string; email: string; created_at: string; is_admin: boolean; }
-
 const Admin = () => {
   const { user, loading } = useAuth();
   const navigate = useNavigate();
-  const [checking, setChecking] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [rows, setRows] = useState<Row[]>([]);
+  const [rows, setRows] = useState<User[]>([]);
+  const isAdmin = !!user?.is_admin;
 
   useEffect(() => { document.title = "Admin — School Anonymous Chat"; }, []);
 
   useEffect(() => {
     if (loading) return;
     if (!user) { navigate("/auth", { replace: true }); return; }
-    (async () => {
-      const { data } = await supabase.from("user_roles").select("role").eq("user_id", user.id).eq("role", "admin");
-      const admin = !!data && data.length > 0;
-      setIsAdmin(admin);
-      setChecking(false);
-      if (!admin) {
-        toast({ title: "Not authorized", variant: "destructive" });
-        navigate("/chat", { replace: true });
-      }
-    })();
+    if (!isAdmin) {
+      toast({ title: "Not authorized", variant: "destructive" });
+      navigate("/chat", { replace: true });
+    }
   }, [user, loading, navigate]);
 
   const refresh = async () => {
-    const { data, error } = await supabase.rpc("admin_list_users");
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    setRows((data as Row[]) || []);
+    try { setRows(await api.listUsers()); }
+    catch (e: any) { toast({ title: "Error", description: e.message, variant: "destructive" }); }
   };
 
   useEffect(() => { if (isAdmin) refresh(); }, [isAdmin]);
 
-  const togglePromote = async (row: Row) => {
-    if (row.is_admin) {
-      const { error } = await supabase.from("user_roles").delete().eq("user_id", row.user_id).eq("role", "admin");
-      if (error) return toast({ title: "Failed", description: error.message, variant: "destructive" });
-      toast({ title: `Removed admin from ${row.handle}` });
-    } else {
-      const { error } = await supabase.from("user_roles").insert({ user_id: row.user_id, role: "admin" });
-      if (error) return toast({ title: "Failed", description: error.message, variant: "destructive" });
-      toast({ title: `Promoted ${row.handle} to admin` });
-    }
-    refresh();
+  const togglePromote = async (row: User) => {
+    try {
+      await api.setAdmin(row.id, !row.is_admin);
+      toast({ title: row.is_admin ? `Removed admin from ${row.handle}` : `Promoted ${row.handle}` });
+      refresh();
+    } catch (e: any) { toast({ title: "Failed", description: e.message, variant: "destructive" }); }
   };
 
-  if (loading || checking) {
+  if (loading) {
     return <div className="min-h-screen flex items-center justify-center"><Loader2 className="size-6 animate-spin" /></div>;
   }
   if (!isAdmin) return null;
@@ -81,15 +66,15 @@ const Admin = () => {
             <div className="col-span-2 text-right">Action</div>
           </div>
           {rows.map((r) => (
-            <div key={r.user_id} className="grid grid-cols-12 gap-3 p-4 items-center hover:bg-muted/30 transition-colors">
+            <div key={r.id} className="grid grid-cols-12 gap-3 p-4 items-center hover:bg-muted/30 transition-colors">
               <div className="col-span-3 flex items-center gap-2">
                 <span className="font-medium">{r.handle}</span>
                 {r.is_admin && <Badge variant="secondary" className="text-xs">admin</Badge>}
               </div>
               <div className="col-span-5 text-sm text-muted-foreground truncate">{r.email}</div>
-              <div className="col-span-2 text-xs text-muted-foreground">{new Date(r.created_at).toLocaleDateString()}</div>
+              <div className="col-span-2 text-xs text-muted-foreground">—</div>
               <div className="col-span-2 flex justify-end">
-                {r.user_id !== user?.id && (
+                {r.id !== user?.id && (
                   <Button size="sm" variant={r.is_admin ? "outline" : "default"} onClick={() => togglePromote(r)}>
                     {r.is_admin ? <><ShieldOff className="size-3 mr-1" /> Demote</> : <><Shield className="size-3 mr-1" /> Promote</>}
                   </Button>
@@ -101,7 +86,7 @@ const Admin = () => {
       </Card>
 
       <p className="text-xs text-muted-foreground mt-4 text-center">
-        Real identities are visible only to admins. To make yourself the first admin, run: <code className="bg-muted px-1 rounded">INSERT INTO user_roles (user_id, role) VALUES ('your-uid', 'admin')</code> in Cloud → Database.
+        Real identities are visible only to admins. To make yourself the first admin, set <code className="bg-muted px-1 rounded">is_admin = true</code> for your user in your server's database.
       </p>
     </main>
   );

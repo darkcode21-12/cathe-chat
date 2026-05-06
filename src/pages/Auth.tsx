@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { z } from "zod";
-import { supabase } from "@/integrations/supabase/client";
+import { api, setToken, getToken } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,9 +23,7 @@ const Auth = () => {
 
   useEffect(() => {
     document.title = "Sign in — School Anonymous Chat";
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) navigate("/chat", { replace: true });
-    });
+    if (getToken()) navigate("/chat", { replace: true });
   }, [navigate]);
 
   const handle = async (mode: "signin" | "signup") => {
@@ -36,43 +34,15 @@ const Auth = () => {
     }
     setLoading(true);
     try {
-      if (mode === "signup") {
-        const { error } = await supabase.auth.signUp({
-          email: parsed.data.email,
-          password: parsed.data.password,
-          options: { emailRedirectTo: `${window.location.origin}/chat` },
-        });
-        if (error) throw error;
-        // Try to sign in immediately (works when auto-confirm is enabled)
-        const { error: signInErr } = await supabase.auth.signInWithPassword({
-          email: parsed.data.email,
-          password: parsed.data.password,
-        });
-        if (signInErr) {
-          toast({ title: "Account created", description: "Please sign in with your new credentials." });
-        } else {
-          toast({ title: "Welcome!", description: "You got a random anonymous handle." });
-          navigate("/chat", { replace: true });
-        }
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email: parsed.data.email,
-          password: parsed.data.password,
-        });
-        if (error) throw error;
-        navigate("/chat", { replace: true });
-      }
+      const result =
+        mode === "signup"
+          ? await api.signup(parsed.data.email, parsed.data.password)
+          : await api.login(parsed.data.email, parsed.data.password);
+      setToken(result.token);
+      toast({ title: mode === "signup" ? "Welcome!" : "Signed in" });
+      navigate("/chat", { replace: true });
     } catch (err: any) {
-      let description = err.message || "Something went wrong";
-      if (err.message?.includes("Invalid login credentials")) {
-        description = "Wrong email or password. If you just signed up, try the Sign up tab instead.";
-      } else if (err.message?.includes("Email not confirmed")) {
-        description = "Please check your email and confirm your account before signing in.";
-      } else if (err.message?.includes("User already registered")) {
-        description = "This email already has an account. Try signing in instead.";
-      } else if (err.message?.includes("weak")) {
-        description = "That password is too common. Please pick a stronger one.";
-      }
+      const description = err?.message || "Could not reach server. Is your API running?";
       toast({ title: "Authentication error", description, variant: "destructive" });
     } finally {
       setLoading(false);
@@ -119,6 +89,20 @@ const Auth = () => {
             </TabsContent>
           ))}
         </Tabs>
+
+        <div className="relative my-6">
+          <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
+          <div className="relative flex justify-center text-xs uppercase">
+            <span className="bg-card px-2 text-muted-foreground">Or</span>
+          </div>
+        </div>
+        <Button
+          variant="outline"
+          className="w-full"
+          onClick={() => { window.location.href = api.googleLoginUrl(); }}
+        >
+          Continue with Google
+        </Button>
       </Card>
     </main>
   );
