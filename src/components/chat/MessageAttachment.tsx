@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { FileIcon, Download } from "lucide-react";
+import { api } from "@/lib/api";
 
 interface Props {
   fileUrl: string;
@@ -9,19 +8,7 @@ interface Props {
 }
 
 export const MessageAttachment = ({ fileUrl, fileType, fileName }: Props) => {
-  const [signed, setSigned] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    supabase.storage.from("chat-files").createSignedUrl(fileUrl, 3600).then(({ data }) => {
-      if (active && data) setSigned(data.signedUrl);
-    });
-    return () => { active = false; };
-  }, [fileUrl]);
-
-  if (!signed) {
-    return <div className="h-24 w-48 rounded-lg bg-muted/50 animate-pulse" />;
-  }
+  const signed = fileUrl.startsWith("http") ? fileUrl : api.fileUrl(fileUrl);
 
   const safeImageTypes = ["image/png", "image/jpeg", "image/gif", "image/webp"];
   if (fileType && safeImageTypes.includes(fileType)) {
