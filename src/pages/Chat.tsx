@@ -1,22 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { api, ChatMessage } from "@/lib/api";
+import { useChatSocket } from "@/hooks/useChatSocket";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/hooks/use-toast";
 import { MessageAttachment } from "@/components/chat/MessageAttachment";
-import { LogOut, Paperclip, Send, Shield, Trash2, MessageCircle } from "lucide-react";
-
-interface Message {
-  id: string;
-  user_id: string;
-  content: string | null;
-  file_url: string | null;
-  file_type: string | null;
-  file_name: string | null;
-  created_at: string;
-}
+import { LogOut, Paperclip, Send, Shield, Trash2, MessageCircle, Wifi, WifiOff } from "lucide-react";
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
 const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
@@ -32,16 +23,15 @@ const ALLOWED_FILE_TYPES = [
 ];
 
 const Chat = () => {
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, signOut: doSignOut } = useAuth();
   const navigate = useNavigate();
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [handles, setHandles] = useState<Record<string, string>>({});
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [myHandle, setMyHandle] = useState<string>("");
   const fileRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const isAdmin = !!user?.is_admin;
+  const myHandle = user?.handle || "";
 
   useEffect(() => {
     document.title = "Group Chat — School Anonymous Chat";
@@ -51,42 +41,19 @@ const Chat = () => {
   // Load initial data
   useEffect(() => {
     if (!user) return;
-    (async () => {
-      const [{ data: msgs }, { data: profs }, { data: roles }] = await Promise.all([
-        supabase.from("messages").select("*").order("created_at", { ascending: true }).limit(200),
-        supabase.from("profiles").select("id, handle"),
-        supabase.from("user_roles").select("role").eq("user_id", user.id),
-      ]);
-      if (msgs) setMessages(msgs as Message[]);
-      if (profs) {
-        const map: Record<string, string> = {};
-        profs.forEach((p: any) => { map[p.id] = p.handle; });
-        setHandles(map);
-        setMyHandle(map[user.id] || "");
-      }
-      if (roles?.some((r: any) => r.role === "admin")) setIsAdmin(true);
-    })();
+    api.listMessages()
+      .then((m) => setMessages(m))
+      .catch((e) => toast({ title: "Failed to load messages", description: e.message, variant: "destructive" }));
   }, [user]);
 
-  // Realtime subscription
-  useEffect(() => {
-    if (!user) return;
-    const channel = supabase
-      .channel("messages-room")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, async (payload) => {
-        const m = payload.new as Message;
-        setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
-        if (!handles[m.user_id]) {
-          const { data } = await supabase.from("profiles").select("handle").eq("id", m.user_id).maybeSingle();
-          if (data) setHandles((h) => ({ ...h, [m.user_id]: data.handle }));
-        }
-      })
-      .on("postgres_changes", { event: "DELETE", schema: "public", table: "messages" }, (payload) => {
-        setMessages((prev) => prev.filter((m) => m.id !== (payload.old as any).id));
-      })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [user, handles]);
+  // Realtime via WebSocket
+  const { connected } = useChatSocket((ev) => {
+    if (ev.type === "message") {
+      setMessages((prev) => prev.some((m) => m.id === ev.data.id) ? prev : [...prev, ev.data]);
+    } else if (ev.type === "delete") {
+      setMessages((prev) => prev.filter((m) => m.id !== ev.id));
+    }
+  }, !!user);
 
   // Auto-scroll
   useEffect(() => {
@@ -98,24 +65,15 @@ const Chat = () => {
     setSending(true);
     const content = text.trim().slice(0, 2000);
     setText("");
-    // Optimistic local message; remote users receive via postgres_changes (server-authoritative)
-    const optimistic: Message = {
-      id: crypto.randomUUID(),
-      user_id: user.id,
-      content,
-      file_url: null,
-      file_type: null,
-      file_name: null,
-      created_at: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, optimistic]);
-    // Persist so messages survive reloads and admins can moderate
-    const { error } = await supabase.from("messages").insert({ id: optimistic.id, user_id: user.id, content });
-    if (error) {
-      setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
-      toast({ title: "Failed to send", description: error.message, variant: "destructive" });
+    try {
+      const msg = await api.sendMessage(content);
+      // WS will likely also broadcast it; dedupe handles that
+      setMessages((prev) => prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]);
+    } catch (e: any) {
+      toast({ title: "Failed to send", description: e.message, variant: "destructive" });
+    } finally {
+      setSending(false);
     }
-    setSending(false);
   };
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -131,44 +89,27 @@ const Chat = () => {
       return;
     }
     setSending(true);
-    const path = `${user.id}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-    const { error: upErr } = await supabase.storage.from("chat-files").upload(path, file, { contentType: file.type });
-    if (upErr) {
-      toast({ title: "Upload failed", description: upErr.message, variant: "destructive" });
+    try {
+      const msg = await api.uploadFile(file);
+      setMessages((prev) => prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]);
+    } catch (e: any) {
+      toast({ title: "Upload failed", description: e.message, variant: "destructive" });
+    } finally {
       setSending(false);
-      return;
     }
-    const optimistic: Message = {
-      id: crypto.randomUUID(),
-      user_id: user.id,
-      content: null,
-      file_url: path,
-      file_type: file.type,
-      file_name: file.name,
-      created_at: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, optimistic]);
-    const { error } = await supabase.from("messages").insert({
-      id: optimistic.id,
-      user_id: user.id,
-      file_url: path,
-      file_type: file.type,
-      file_name: file.name,
-    });
-    if (error) {
-      setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
-      toast({ title: "Failed to send", description: error.message, variant: "destructive" });
-    }
-    setSending(false);
   };
 
   const deleteMsg = async (id: string) => {
-    const { error } = await supabase.from("messages").delete().eq("id", id);
-    if (error) toast({ title: "Delete failed", description: error.message, variant: "destructive" });
+    try {
+      await api.deleteMessage(id);
+      setMessages((prev) => prev.filter((m) => m.id !== id));
+    } catch (e: any) {
+      toast({ title: "Delete failed", description: e.message, variant: "destructive" });
+    }
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    doSignOut();
     navigate("/auth", { replace: true });
   };
 
@@ -187,6 +128,9 @@ const Chat = () => {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <span title={connected ? "Live" : "Offline"} className={connected ? "text-green-500" : "text-muted-foreground"}>
+            {connected ? <Wifi className="size-4" /> : <WifiOff className="size-4" />}
+          </span>
           {isAdmin && (
             <Button asChild variant="secondary" size="sm">
               <Link to="/admin"><Shield className="size-4 mr-1" /> Admin</Link>
@@ -208,7 +152,7 @@ const Chat = () => {
           )}
           {messages.map((m) => {
             const mine = m.user_id === user?.id;
-            const handle = handles[m.user_id] || "Anonymous";
+            const handle = m.handle || "Anonymous";
             return (
               <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"} group`}>
                 <div className={`max-w-[80%] ${mine ? "items-end" : "items-start"} flex flex-col gap-1`}>
